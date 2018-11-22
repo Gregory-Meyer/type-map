@@ -12,7 +12,7 @@ option(TYPE_MAP_BUILD_TESTS "Build tests for type-map." ON)
 if(TYPE_MAP_BUILD_TESTS)
 	include_directories(external/Catch2/single_include)
 
-	add_executable(test_tmap test/main.spec.cpp test/tmap.spec.cpp)
+	add_executable(test_tmap test/main.spec.cpp test/tmap.spec.cpp test/detail/hash_table.spec.cpp)
 endif()
 
 option(TYPE_MAP_BUILD_BENCHMARKS

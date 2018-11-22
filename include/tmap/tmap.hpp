@@ -35,4 +35,14 @@
 #ifndef TMAP_TMAP_HPP
 #define TMAP_TMAP_HPP
 
+#include <typeinfo>
+#include <vector>
+
+namespace tmap {
+
+template <typename T>
+class TypeMap { };
+
+} // namespace tmap
+
 #endif
