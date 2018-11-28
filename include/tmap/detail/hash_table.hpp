@@ -124,7 +124,6 @@ template <typename T, typename H = std::hash<T>, typename E = std::equal_to<T>,
 class HashTable {
 public:
 	static_assert(std::is_nothrow_move_constructible_v<T>);
-	static_assert(std::is_nothrow_move_assignable_v<T>);
 
 	using value_type = T;
 	using hasher = H;
@@ -135,6 +134,10 @@ public:
 	using const_iterator = Iterator<T, true>;
 	using reverse_iterator = std::reverse_iterator<iterator>;
 	using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+	using reference = T&;
+	using const_reference = const T&;
+	using pointer = typename std::allocator_traits<A>::pointer;
+	using const_pointer = typename std::allocator_traits<A>::const_pointer;
 
 	HashTable() = default;
 
@@ -143,9 +146,9 @@ public:
 
 	HashTable(size_type num_buckets, const H &hash,
 			  const E &equal = E{ }, const A &alloc = A{ })
-	: buckets_{ next_highest_power_of_2(num_buckets) },
-	  dibs_{ next_highest_power_of_2(num_buckets), EMPTY, alloc},
-	  hash_{ hash }, equal_{ equal } { }
+	: buckets_{ alloc }, dibs_{ alloc}, hash_{ hash }, equal_{ equal } {
+		reserve(num_buckets);
+	}
 
 	HashTable(size_type num_buckets, const A &alloc)
 	: HashTable{ num_buckets, H{ }, E{ }, alloc } { }
@@ -171,13 +174,18 @@ public:
 	} { }
 
 	HashTable(const HashTable &other, size_type num_buckets, const A &alloc)
-	: buckets_{ next_highest_power_of_2(num_buckets), alloc },
-	  dibs_{ next_highest_power_of_2(num_buckets), EMPTY, alloc },
-	  hash_{ other.hash_ }, equal_{ other.equal_ } {
-		reserve(num_buckets);
+	: buckets_{ alloc }, dibs_{ alloc }, hash_{ other.hash_ }, equal_{ other.equal_ } {
+		const auto actual_num_buckets = std::max({
+			next_highest_power_of_2(num_buckets),
+			MINIMUM_CAPACITY,
+			next_highest_power_of_2(other.size())
+		});
 
-		for (std::size_t i = 0; i < other.capacity(); ++i) {
-			if (other.dibs_[i] != EMPTY) {
+		buckets_.resize(actual_num_buckets);
+		dibs_.resize(actual_num_buckets, EMPTY);
+
+		for (size_type i = 0; i < other.capacity(); ++i) {
+			if (!other.is_empty(i)) {
 				do_insert(other.at(i));
 			}
 		}
@@ -199,7 +207,7 @@ public:
 		reserve(other.size_ * 2);
 
 		for (std::size_t i = 0; i < other.capacity(); ++i) {
-			if (other.dibs_[i] != EMPTY) {
+			if (!other.is_empty(i)) {
 				do_insert(std::move(other.at(i)));
 			}
 		}
@@ -325,7 +333,7 @@ public:
 		return { make_iterator(do_insert(std::move(value))), true };
 	}
 
-	iterator erase(const_iterator pos) {
+	iterator erase(const_iterator pos) noexcept {
 		const auto idx = static_cast<size_type>(pos.bucket_ - pos.first_);
 		const auto next_idx = do_erase(idx);
 
@@ -336,7 +344,7 @@ public:
 		return make_iterator(next_idx);
 	}
 
-	size_type erase(const T &value) {
+	size_type erase(const T &value) noexcept {
 		const auto found = do_find(value);
 
 		if (found == NOT_FOUND) {
@@ -357,8 +365,6 @@ public:
 	}
 
 	void reserve(size_type new_capacity) {
-		static constexpr size_type MINIMUM_CAPACITY = 1;
-
 		if (new_capacity <= capacity()) {
 			return;
 		}
@@ -393,6 +399,7 @@ private:
 	using AllocTraits = std::allocator_traits<A>;
 
 	static constexpr inline size_type NOT_FOUND = std::numeric_limits<size_type>::max();
+	static constexpr inline size_type MINIMUM_CAPACITY = 16;
 
 	iterator make_iterator(size_type index) noexcept {
 		assert(index <= capacity());
@@ -408,27 +415,27 @@ private:
 				 buckets_.data(), buckets_.data() + capacity() };
 	}
 
-	T& at(size_type index) {
+	T& at(size_type index) noexcept {
 		assert(index < capacity());
 		assert(dibs_[index] != EMPTY);
 
 		return reinterpret_cast<T&>(buckets_[index]);
 	}
 
-	const T& at(size_type index) const {
+	const T& at(size_type index) const noexcept {
 		assert(index < capacity());
 		assert(dibs_[index] != EMPTY);
 
 		return reinterpret_cast<const T&>(buckets_[index]);
 	}
 
-	T* get(size_type index) {
+	T* get(size_type index) noexcept {
 		assert(index <= capacity());
 
 		return reinterpret_cast<T*>(buckets_.data() + index);
 	}
 
-	const T* get(size_type index) const {
+	const T* get(size_type index) const noexcept {
 		assert(index <= capacity());
 
 		return reinterpret_cast<const T*>(buckets_.data() + index);
@@ -553,6 +560,7 @@ private:
 		assert(bucket < capacity());
 		assert(dibs_[bucket] != EMPTY);
 
+		destroy(bucket);
 		shift_left_until_empty(bucket);
 
 		for (size_type i = bucket; i < capacity(); ++i) {
@@ -565,26 +573,11 @@ private:
 	}
 
 	void shift_left_until_empty(size_type bucket) noexcept {
-		struct Destroyer {
-			~Destroyer() {
-				assert(to_delete < ht.capacity());
-				assert(ht.dibs_[to_delete] != EMPTY);
-
-				if (to_delete != NOT_FOUND) {
-					ht.destroy(to_delete);
-				}
-			}
-
-			HashTable &ht;
-			size_type to_delete;
-		};
-
 		assert(!empty());
 		assert(bucket < capacity());
-		assert(dibs_[bucket] != EMPTY);
+		assert(dibs_[bucket] == EMPTY);
 
 		--size_;
-		Destroyer destroyer{ *this, bucket };
 
 		const auto next_bucket = [this, bucket]() -> size_type {
 			if (bucket + 1 == capacity()) {
@@ -598,15 +591,15 @@ private:
 			return;
 		}
 
-		const auto move_from = [this, &destroyer](size_type src, size_type dst) {
+		const auto move_from = [this](size_type src, size_type dst) {
 			assert(src < capacity());
 			assert(dst < capacity());
-			assert(dibs_[dst] != EMPTY);
+			assert(dibs_[dst] == EMPTY);
 			assert(dibs_[src] != EMPTY && dibs_[src] > 0);
 
-			at(dst) = std::move(at(src));
-			dibs_[dst] = dibs_[src] - 1;
-			destroyer.to_delete = src;
+			construct(dst, dibs_[src] - 1, std::move(at(src)));
+			destroy(src);
+			dibs_[src] = EMPTY;
 		};
 
 		move_from(next_bucket, bucket);
