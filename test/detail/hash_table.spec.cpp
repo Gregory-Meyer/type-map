@@ -32,6 +32,7 @@
 // ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
+#include <tmap/detail/fnv.hpp>
 #include <tmap/detail/hash_table.hpp>
 
 #include <algorithm>
@@ -111,4 +112,26 @@ TEST_CASE("HashTable multi basics") {
 
 	REQUIRE(table.size() == 0);
 	REQUIRE(table.empty());
+}
+
+TEST_CASE("HashTable<std::pair<const std::type_index, int>>") {
+	using Pair = std::pair<const std::type_index, int>;
+
+	struct Hash {
+		std::size_t operator()(const Pair &pair) const noexcept {
+			return tmap::detail::FnvHash<std::type_index>{ }(pair.first);
+		}
+	};
+
+	struct Equal {
+		bool operator()(const Pair &lhs, const Pair &rhs) const noexcept {
+			return lhs.first == rhs.first;
+		}
+	};
+
+	using Table = tmap::detail::HashTable<Pair, Hash, Equal>;
+
+	Table table;
+	REQUIRE(table.insert({ typeid(int), 0 }).second);
+	REQUIRE_FALSE(table.insert({ typeid(int), 15 }).second);
 }
